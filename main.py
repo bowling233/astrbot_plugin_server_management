@@ -28,7 +28,8 @@ _USAGE = (
     "  info_system <m> / info_summary\n"
     "  boot_show <m> / boot_set <m> <device> [persistent=true]\n"
     "  sensor_show <m> / bmc_show <m>\n"
-    "  machine_list / machine_probe <m>"
+    "  machine_list / machine_probe <m>\n"
+    "  machine_add <name> <address> / machine_delete <name>"
 )
 
 
@@ -362,6 +363,76 @@ class Main(Star):
         except Exception as e:  # noqa: BLE001
             lines.append(f"  ❌ 连接失败: {self._short_error(e)}")
         yield event.plain_result("\n".join(lines))
+
+    @server.command("machine_add")
+    async def machine_add(
+        self,
+        event: AstrMessageEvent,
+        name: str,
+        address: str,
+    ) -> None:
+        """添加一台机器 (redfish 协议，凭据走默认配置，会先测认证)
+
+        认证失败时不会写入配置。仅支持 redfish；IPMI 请在管理面板添加。
+        """
+        row = {
+            "__template_key": "machine",
+            "name": name,
+            "protocol": "redfish",
+            "address": address,
+            "username": "",
+            "password": "",
+            "port": 623,
+        }
+        # Step 1: register in memory (validates + applies default-credential
+        # fallback). A failure here means the row itself is bad — nothing to
+        # roll back, nothing to persist.
+        try:
+            machine_obj = self.manager.add_machine(row)
+        except MachineError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        # Step 2: actually open a connection and authenticate. Reusing the
+        # POWER_STATUS path mirrors `machine_probe`; a 401 / refused connection
+        # surfaces as an exception. On failure we roll back the in-memory
+        # registration so the machine is not left in a half-added state.
+        try:
+            await run_in_thread(
+                self.manager.run,
+                machine_obj,
+                Capability.POWER_STATUS,
+                lambda backend: backend.get_power_state(),
+            )
+        except Exception as e:  # noqa: BLE001
+            self.manager.delete_machine(name)
+            yield event.plain_result(
+                f"❌ 认证/连接失败，未添加 {name}: {self._short_error(e)}",
+            )
+            return
+        # Step 3: persist. Only reached if both validation and the live auth
+        # probe succeeded, so the config file never holds an unreachable entry.
+        self._config["machines"].append(row)
+        self._config.save_config()
+        yield event.plain_result(f"✅ 已添加 {name} ({address})")
+
+    @server.command("machine_delete")
+    async def machine_delete(self, event: AstrMessageEvent, name: str) -> None:
+        """删除一台机器"""
+        try:
+            removed = self.manager.delete_machine(name)
+        except MachineError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        # Sync the on-disk config: rebuild the list without the matching row.
+        # Matching by `name` (not identity) keeps this robust to the config
+        # having been hand-edited between load and delete.
+        self._config["machines"] = [
+            row
+            for row in self._config.get("machines", [])
+            if str(row.get("name", "")) != name
+        ]
+        self._config.save_config()
+        yield event.plain_result(f"✅ 已删除 {removed.name} ({removed.address})")
 
     # ===================================================================
     # Helpers

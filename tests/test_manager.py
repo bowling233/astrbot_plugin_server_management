@@ -27,7 +27,10 @@ from astrbot_plugin_server_management.backends import (  # noqa: E402
     register_backend,
     supported_protocols,
 )
-from astrbot_plugin_server_management.manager import MachineManager  # noqa: E402
+from astrbot_plugin_server_management.manager import (  # noqa: E402
+    MachineError,
+    MachineManager,
+)
 
 
 class FakeBackend(ServerBackend):
@@ -196,6 +199,77 @@ def test_missing_credentials_without_defaults_errors():
     assert any("缺少用户名" in e and "默认凭据" in e for e in manager.errors)
 
 
+def test_add_machine_success_with_default_credentials():
+    # Runtime add mirrors startup behavior: blank credentials fall back to the
+    # configured defaults, and the machine is immediately resolvable.
+    manager = MachineManager(
+        [],
+        default_username="defuser",
+        default_password="defpass",
+    )
+    machine = manager.add_machine(
+        {"name": "new", "protocol": "fake", "address": "10.0.0.5"},
+    )
+    assert machine.name == "new"
+    assert machine.username == "defuser"
+    assert machine.password == "defpass"
+    assert "new" in manager.machine_names
+    assert manager.get_machine("new") is machine
+
+
+def test_add_machine_duplicate_raises():
+    # A duplicate name must raise (not silently ignore like the startup path).
+    manager = MachineManager(
+        [{"name": "m", "protocol": "fake", "address": "1.1.1.1"}],
+        default_username="u",
+        default_password="p",
+    )
+    try:
+        manager.add_machine({"name": "m", "protocol": "fake", "address": "2.2.2.2"})
+    except MachineError as exc:
+        assert "已存在" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected MachineError for duplicate name")
+
+
+def test_add_machine_missing_default_creds_raises():
+    # Without default credentials, a blank-credential row cannot be added at
+    # runtime either; the error must propagate so the chat command can report
+    # it (rather than silently dropping the entry).
+    manager = MachineManager([{"name": "m", "protocol": "fake", "address": "1.1.1.1"}])
+    try:
+        manager.add_machine(
+            {"name": "new", "protocol": "fake", "address": "10.0.0.5"},
+        )
+    except MachineError as exc:
+        assert "缺少用户名" in str(exc) and "默认凭据" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected MachineError for missing credentials")
+    # Nothing was registered.
+    assert "new" not in manager.machine_names
+
+
+def test_delete_machine_success():
+    manager = MachineManager(
+        [{"name": "m", "protocol": "fake", "address": "1.1.1.1"}],
+        default_username="u",
+        default_password="p",
+    )
+    removed = manager.delete_machine("m")
+    assert removed.name == "m"
+    assert manager.machine_names == []
+
+
+def test_delete_machine_unknown_raises():
+    manager = MachineManager([])
+    try:
+        manager.delete_machine("ghost")
+    except MachineError as exc:
+        assert "ghost" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected MachineError for unknown machine")
+
+
 if __name__ == "__main__":
     test_register_and_supported_protocols()
     test_config_validation_collects_errors()
@@ -203,4 +277,9 @@ if __name__ == "__main__":
     test_resolve_unknown_machine()
     test_default_credentials_fallback()
     test_missing_credentials_without_defaults_errors()
+    test_add_machine_success_with_default_credentials()
+    test_add_machine_duplicate_raises()
+    test_add_machine_missing_default_creds_raises()
+    test_delete_machine_success()
+    test_delete_machine_unknown_raises()
     print("All tests passed.")
