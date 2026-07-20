@@ -1,0 +1,64 @@
+{
+  "machines": {
+    "description": "受管理的服务器列表",
+    "hint": "每一行配置一台服务器：机器名（用于指令）、协议（redfish / ipmi）、地址（域名或 IP，Redfish 可带 https://）、用户名、密码。IPMI 可额外指定端口（默认 623）。",
+    "type": "template_list",
+    "default": [],
+    "templates": {
+      "machine": {
+        "name": "服务器",
+        "display_item": "name",
+        "hide_hint_in_list": true,
+        "items": {
+          "name": {
+            "description": "机器名",
+            "type": "string",
+            "hint": "用于指令中引用该机器，例如 power on <机器名>。在列表中需唯一。",
+            "default": "node1"
+          },
+          "protocol": {
+            "description": "管理协议",
+            "type": "string",
+            "hint": "redfish 或 ipmi",
+            "default": "redfish",
+            "options": ["redfish", "ipmi"]
+          },
+          "address": {
+            "description": "地址",
+            "type": "string",
+            "hint": "域名或 IP。Redfish 可写完整 URL（https://...）；IPMI 默认端口 623。",
+            "default": "192.168.1.100"
+          },
+          "username": {
+            "description": "用户名",
+            "type": "string",
+            "default": "admin"
+          },
+          "password": {
+            "description": "密码",
+            "type": "string",
+            "default": ""
+          },
+          "port": {
+            "description": "端口（仅 IPMI）",
+            "type": "int",
+            "hint": "IPMI/RMCP+ 端口，默认 623。Redfish 忽略此项。",
+            "default": 623
+          }
+        }
+      }
+    }
+  },
+  "graceful_shutdown": {
+    "description": "power off 默认优雅关机",
+    "type": "bool",
+    "hint": "开启后，/server power off 使用优雅关机（Redfish GracefulShutdown / IPMI ACPI soft-off）；关闭则强制断电。可用 /server forceoff 强制关机。",
+    "default": true
+  },
+  "verify_ssl": {
+    "description": "Redfish 校验 SSL 证书",
+    "type": "bool",
+    "hint": "是否校验 Redfish (HTTPS) 的 TLS 证书。很多 BMC 使用自签证书，默认关闭。",
+    "default": false
+  }
+}
