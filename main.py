@@ -1,22 +1,14 @@
 """AstrBot plugin for server management via Redfish / IPMI.
 
-Exposes a hierarchical command tree rooted at ``/<plugin>`` (configured by the
-user). Each subtree groups related operations:
+All commands live under a single ``server`` command group, using flat
+underscore-separated sub-command names (e.g. ``/server power_list``,
+``/server power_on <machine>``). A flat namespace keeps registration simple
+and robust — it mirrors how AstrBot's own built-in commands are registered.
 
-    /<plugin> power list          # power state of every machine
-    /<plugin> power on <machine>  # power on one machine
-    /<plugin> power off <machine> # power off (graceful by default)
-    /<plugin> info <machine>      # system / hardware info
-    /<plugin> boot <machine>      # current boot device
-    /<plugin> sensor <machine>    # sensor readings
-    /<plugin> bmc <machine>       # management controller info
-    /<plugin> machine list        # configured machines
-    /<plugin> machine probe <m>   # check connectivity + capabilities
-
-The plugin is intentionally tolerant: backend operations run inside try/except
-so a connection failure is reported as a message rather than crashing the
-pipeline. ``all`` is accepted as a machine name where a single-machine power
-operation would otherwise be required, to operate on every machine at once.
+``all`` is accepted as a machine name for power operations to operate on every
+configured machine at once. Backend calls run in a worker thread so the event
+loop is never blocked, and every operation is wrapped in try/except so a
+connection failure is reported as a chat message rather than crashing.
 """
 
 from __future__ import annotations
@@ -27,6 +19,17 @@ from astrbot.api.star import Context, Star
 
 from .backends import Capability, PowerState
 from .manager import MachineError, MachineManager, run_in_thread
+
+#: Brief pointer shown when the group is invoked without a sub-command.
+_USAGE = (
+    "用法: /server <子指令>\n"
+    "  power_list / power_on <m> / power_off <m> / power_forceoff <m>\n"
+    "  power_reset <m> / power_cycle <m>\n"
+    "  info_system <m> / info_summary\n"
+    "  boot_show <m> / boot_set <m> <device> [persistent=true]\n"
+    "  sensor_show <m> / bmc_show <m>\n"
+    "  machine_list / machine_probe <m>"
+)
 
 
 class Main(Star):
@@ -66,20 +69,24 @@ class Main(Star):
         return self._manager
 
     # ===================================================================
-    # Top-level group.
+    # Root command group.
     #
-    # All sub-commands hang off a single root command so the user invokes the
-    # plugin as ``/server <subgroup> <action> ...``. This keeps the command
-    # namespace tidy and matches the ``/<plugin> power list`` style requested.
+    # ``filter.command_group`` returns a decorator that must be applied to a
+    # root handler; the decorated result is a ``RegisteringCommandable`` we
+    # re-bind as ``server`` so sub-commands can chain off it. All sub-commands
+    # are flat (underscore names) to keep registration simple and robust.
     # ===================================================================
-    root = filter.command_group("server")
+    @filter.command_group("server")
+    async def _server_root(self, event: AstrMessageEvent) -> None:
+        """服务器管理 (Redfish / IPMI)"""
+        yield event.plain_result(_USAGE)
+
+    server = _server_root
 
     # -----------------------------------------------------------------
     # power
     # -----------------------------------------------------------------
-    power = root.group("power")
-
-    @power.command("list")
+    @server.command("power_list")
     async def power_list(self, event: AstrMessageEvent) -> None:
         """显示所有已配置机器的电源状态"""
         names = self.manager.machine_names
@@ -91,36 +98,37 @@ class Main(Star):
             lines.append(f"  • {name}: {await self._safe_power(name)}")
         yield event.plain_result("\n".join(lines))
 
-    @power.command("on")
+    @server.command("power_on")
     async def power_on(self, event: AstrMessageEvent, machine: str) -> None:
         """开启指定机器 (machine=all 则全部开启)"""
         yield event.plain_result(await self._power_action(machine, Capability.POWER_ON))
 
-    @power.command("off")
+    @server.command("power_off")
     async def power_off(self, event: AstrMessageEvent, machine: str) -> None:
         """关闭指定机器 (machine=all 则全部关闭，默认优雅关机)"""
-        result = await self._power_action(machine, Capability.POWER_OFF_GRACEFUL)
-        yield event.plain_result(result)
-
-    @power.command("forceoff")
-    async def power_force_off(self, event: AstrMessageEvent, machine: str) -> None:
-        """强制关闭指定机器"""
         yield event.plain_result(
-            await self._power_action(machine, Capability.POWER_OFF)
+            await self._power_action(machine, Capability.POWER_OFF_GRACEFUL),
         )
 
-    @power.command("reset")
+    @server.command("power_forceoff")
+    async def power_forceoff(self, event: AstrMessageEvent, machine: str) -> None:
+        """强制关闭指定机器"""
+        yield event.plain_result(
+            await self._power_action(machine, Capability.POWER_OFF),
+        )
+
+    @server.command("power_reset")
     async def power_reset(self, event: AstrMessageEvent, machine: str) -> None:
         """硬重启指定机器"""
         yield event.plain_result(
-            await self._power_action(machine, Capability.POWER_RESET)
+            await self._power_action(machine, Capability.POWER_RESET),
         )
 
-    @power.command("cycle")
+    @server.command("power_cycle")
     async def power_cycle(self, event: AstrMessageEvent, machine: str) -> None:
         """电源循环 (先关再开) 指定机器"""
         yield event.plain_result(
-            await self._power_action(machine, Capability.POWER_CYCLE)
+            await self._power_action(machine, Capability.POWER_CYCLE),
         )
 
     async def _power_action(self, machine: str, capability: Capability) -> str:
@@ -130,9 +138,7 @@ class Main(Star):
             return self._no_targets_message(machine)
         results: list[str] = []
         for name in targets:
-            results.append(
-                f"  • {name}: {await self._run_power(name, capability)}",
-            )
+            results.append(f"  • {name}: {await self._run_power(name, capability)}")
         return "\n".join(results)
 
     async def _run_power(self, name: str, capability: Capability) -> str:
@@ -180,17 +186,17 @@ class Main(Star):
     # -----------------------------------------------------------------
     # info
     # -----------------------------------------------------------------
-    info = root.group("info")
-
-    @info.command("system")
+    @server.command("info_system")
     async def info_system(self, event: AstrMessageEvent, machine: str) -> None:
         """显示指定机器的系统/硬件信息"""
         lines = await self._safe_lines(
-            machine, Capability.SYSTEM_INFO, self._system_info_op
+            machine,
+            Capability.SYSTEM_INFO,
+            self._system_info_op,
         )
         yield event.plain_result(f"📋 {machine} 系统信息:\n{lines}")
 
-    @info.command("summary")
+    @server.command("info_summary")
     async def info_summary(self, event: AstrMessageEvent) -> None:
         """显示所有机器的电源状态与基本信息摘要"""
         names = self.manager.machine_names
@@ -201,7 +207,9 @@ class Main(Star):
         for name in names:
             power = await self._safe_power(name)
             info = await self._safe_lines(
-                name, Capability.SYSTEM_INFO, self._system_info_op
+                name,
+                Capability.SYSTEM_INFO,
+                self._system_info_op,
             )
             model = self._extract_model(info)
             blocks.append(f"  • {name}: {power}")
@@ -224,15 +232,13 @@ class Main(Star):
     # -----------------------------------------------------------------
     # boot
     # -----------------------------------------------------------------
-    boot = root.group("boot")
-
-    @boot.command("show")
+    @server.command("boot_show")
     async def boot_show(self, event: AstrMessageEvent, machine: str) -> None:
         """显示指定机器的启动设备配置"""
         lines = await self._safe_lines(machine, Capability.BOOT_DEVICE, self._boot_op)
         yield event.plain_result(f"👢 {machine} 启动配置:\n{lines}")
 
-    @boot.command("set")
+    @server.command("boot_set")
     async def boot_set(
         self,
         event: AstrMessageEvent,
@@ -266,11 +272,9 @@ class Main(Star):
         return backend.get_boot_device().to_lines()
 
     # -----------------------------------------------------------------
-    # sensor
+    # sensor / bmc
     # -----------------------------------------------------------------
-    sensor = root.group("sensor")
-
-    @sensor.command("show")
+    @server.command("sensor_show")
     async def sensor_show(self, event: AstrMessageEvent, machine: str) -> None:
         """显示指定机器的传感器读数"""
         machine_obj = self.manager.get_machine(machine)
@@ -299,12 +303,7 @@ class Main(Star):
         except Exception as e:  # noqa: BLE001
             yield event.plain_result(f"❌ {machine} 失败: {self._short_error(e)}")
 
-    # -----------------------------------------------------------------
-    # bmc
-    # -----------------------------------------------------------------
-    bmc = root.group("bmc")
-
-    @bmc.command("show")
+    @server.command("bmc_show")
     async def bmc_show(self, event: AstrMessageEvent, machine: str) -> None:
         """显示指定机器的管理控制器 (BMC) 信息"""
         lines = await self._safe_lines(machine, Capability.BMC_INFO, self._bmc_op)
@@ -315,11 +314,9 @@ class Main(Star):
         return backend.get_bmc_info().to_lines()
 
     # -----------------------------------------------------------------
-    # machine
+    # machine management
     # -----------------------------------------------------------------
-    machine_grp = root.group("machine")
-
-    @machine_grp.command("list")
+    @server.command("machine_list")
     async def machine_list(self, event: AstrMessageEvent) -> None:
         """列出所有已配置的机器"""
         names = self.manager.machine_names
@@ -332,18 +329,14 @@ class Main(Star):
             lines.append(f"  • {name} — {m.protocol} @ {m.address}")
         yield event.plain_result("\n".join(lines))
 
-    @machine_grp.command("probe")
+    @server.command("machine_probe")
     async def machine_probe(self, event: AstrMessageEvent, machine: str) -> None:
         """探测指定机器: 连接测试 + 支持的能力列表"""
         machine_obj = self.manager.get_machine(machine)
         lines = [f"🔍 {machine_obj} 探测结果:"]
 
         def op(backend) -> list[str]:
-            supported = []
-            for cap in Capability:
-                if backend.supports(cap):
-                    supported.append(cap.value)
-            return supported
+            return [cap.value for cap in Capability if backend.supports(cap)]
 
         try:
             capabilities = await run_in_thread(
@@ -367,9 +360,8 @@ class Main(Star):
     # ===================================================================
     def _resolve_targets(self, machine: str) -> list[str]:
         """Expand ``all`` to every machine name; otherwise validate the name."""
-        names = self.manager.machine_names
         if machine.lower() == "all":
-            return names
+            return self.manager.machine_names
         if machine in self.manager.machine_names:
             return [machine]
         return []

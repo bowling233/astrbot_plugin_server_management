@@ -6,20 +6,20 @@
 
 | 命令 | 功能 |
 | --- | --- |
-| `/server power list` | 显示所有机器电源状态 |
-| `/server power on <machine>` | 开机 |
-| `/server power off <machine>` | 关机（默认优雅） |
-| `/server forceoff <machine>` | 强制关机 |
-| `/server power reset <machine>` | 硬重启 |
-| `/server power cycle <machine>` | 电源循环 |
-| `/server info system <machine>` | 系统信息（制造商/型号/序列号/CPU/内存） |
-| `/server info summary` | 所有机器电源与型号摘要 |
-| `/server boot show <machine>` | 查看启动设备 |
-| `/server boot set <machine> <device> [persistent=true]` | 设置启动设备（pxe/hdd/cd/usb/bios/uefi） |
-| `/server sensor show <machine>` | 传感器读数（温度/风扇/电压） |
-| `/server bmc show <machine>` | 管理控制器（BMC）信息 |
-| `/server machine list` | 列出已配置的机器 |
-| `/server machine probe <machine>` | 连接测试 + 支持的能力列表 |
+| `/server power-list` | 显示所有机器电源状态 |
+| `/server power-on <machine>` | 开机 |
+| `/server power-off <machine>` | 关机（默认优雅） |
+| `/server power-forceoff <machine>` | 强制关机 |
+| `/server power-reset <machine>` | 硬重启 |
+| `/server power-cycle <machine>` | 电源循环 |
+| `/server info-system <machine>` | 系统信息（制造商/型号/序列号/CPU/内存） |
+| `/server info-summary` | 所有机器电源与型号摘要 |
+| `/server boot-show <machine>` | 查看启动设备 |
+| `/server boot-set <machine> <device> [persistent=true]` | 设置启动设备（pxe/hdd/cd/usb/bios/uefi） |
+| `/server sensor-show <machine>` | 传感器读数（温度/风扇/电压） |
+| `/server bmc-show <machine>` | 管理控制器（BMC）信息 |
+| `/server machine-list` | 列出已配置的机器 |
+| `/server machine-probe <machine>` | 连接测试 + 支持的能力列表 |
 
 ## 协议支持
 
