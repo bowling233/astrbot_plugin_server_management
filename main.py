@@ -45,16 +45,24 @@ class Main(Star):
     async def initialize(self) -> None:
         """Parse the machine configuration once at plugin load."""
         machines = []
+        default_username = ""
+        default_password = ""
         if self._config:
             machines = list(self._config.get("machines", []) or [])
             self._graceful_off = bool(self._config.get("graceful_shutdown", True))
             self._verify_ssl = bool(self._config.get("verify_ssl", False))
+            default_username = str(self._config.get("default_username", "") or "")
+            default_password = str(self._config.get("default_password", "") or "")
             if self._verify_ssl:
                 # Propagate the SSL flag to every Redfish machine.
                 for row in machines:
                     if str(row.get("protocol", "")).lower() == "redfish":
                         row.setdefault("verify_ssl", True)
-        self._manager = MachineManager(machines)
+        self._manager = MachineManager(
+            machines,
+            default_username=default_username,
+            default_password=default_password,
+        )
         for error in self._manager.errors:
             logger.warning(f"[server_management] {error}")
         if not self._manager.machine_names:

@@ -49,9 +49,16 @@ class Machine:
 class MachineManager:
     """Holds the configured machines and runs backend operations on them."""
 
-    def __init__(self, machines: list[dict]) -> None:
+    def __init__(
+        self,
+        machines: list[dict],
+        default_username: str = "",
+        default_password: str = "",
+    ) -> None:
         self._machines: dict[str, Machine] = {}
         self._errors: list[str] = []
+        self._default_username = default_username or ""
+        self._default_password = default_password or ""
         for index, row in enumerate(machines or []):
             self._add_machine(index, row)
 
@@ -64,8 +71,9 @@ class MachineManager:
         name = str(row.get("name", "")).strip()
         protocol = str(row.get("protocol", "")).strip().lower()
         address = str(row.get("address", "")).strip()
-        username = str(row.get("username", "")).strip()
-        password = str(row.get("password", ""))
+        # Fall back to the default credentials when the row leaves them blank.
+        username = str(row.get("username", "")).strip() or self._default_username
+        password = str(row.get("password", "")) or self._default_password
 
         if not name:
             self._errors.append(f"第 {index + 1} 行缺少机器名 (name)。")
@@ -83,7 +91,9 @@ class MachineManager:
             self._errors.append(f"机器 '{name}' 缺少地址 (address)。")
             return
         if not username:
-            self._errors.append(f"机器 '{name}' 缺少用户名 (username)。")
+            self._errors.append(
+                f"机器 '{name}' 缺少用户名 (username)，且未配置默认凭据。",
+            )
             return
 
         options: dict = {}

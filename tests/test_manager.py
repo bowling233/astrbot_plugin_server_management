@@ -172,8 +172,28 @@ def test_resolve_unknown_machine():
         manager.get_machine("missing")
     except Exception as exc:  # MachineError
         assert "missing" in str(exc)
-    else:  # pragma: no cover - defensive
-        raise AssertionError("expected MachineError")
+
+
+def test_default_credentials_fallback():
+    # Machine rows with blank username/password fall back to the defaults.
+    manager = MachineManager(
+        [{"name": "m", "protocol": "fake", "address": "1.1.1.1"}],
+        default_username="defuser",
+        default_password="defpass",
+    )
+    assert manager.errors == []
+    machine = manager.get_machine("m")
+    assert machine.username == "defuser"
+    assert machine.password == "defpass"
+
+
+def test_missing_credentials_without_defaults_errors():
+    # With no defaults configured, a blank username is a hard error.
+    manager = MachineManager(
+        [{"name": "m", "protocol": "fake", "address": "1.1.1.1"}],
+    )
+    assert manager.machine_names == []
+    assert any("缺少用户名" in e and "默认凭据" in e for e in manager.errors)
 
 
 if __name__ == "__main__":
@@ -181,4 +201,6 @@ if __name__ == "__main__":
     test_config_validation_collects_errors()
     test_capability_gate_rejects_unsupported()
     test_resolve_unknown_machine()
+    test_default_credentials_fallback()
+    test_missing_credentials_without_defaults_errors()
     print("All tests passed.")

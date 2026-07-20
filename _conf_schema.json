@@ -60,5 +60,17 @@
     "type": "bool",
     "hint": "是否校验 Redfish (HTTPS) 的 TLS 证书。很多 BMC 使用自签证书，默认关闭。",
     "default": false
+  },
+  "default_username": {
+    "description": "默认用户名",
+    "type": "string",
+    "hint": "当某台机器的用户名留空时，回退使用此默认用户名。",
+    "default": ""
+  },
+  "default_password": {
+    "description": "默认密码",
+    "type": "string",
+    "hint": "当某台机器的密码留空时，回退使用此默认密码。",
+    "default": ""
   }
 }
