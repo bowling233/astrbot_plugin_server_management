@@ -31,6 +31,7 @@ from astrbot_plugin_server_management.manager import (  # noqa: E402
     MachineError,
     MachineManager,
 )
+from astrbot_plugin_server_management.responses import plain_text_result  # noqa: E402
 
 
 class FakeBackend(ServerBackend):
@@ -270,6 +271,26 @@ def test_delete_machine_unknown_raises():
         raise AssertionError("expected MachineError for unknown machine")
 
 
+def test_plain_text_result_disables_markdown():
+    class FakeResult:
+        def __init__(self, text):
+            self.text = text
+            self.use_markdown_value = None
+
+        def use_markdown(self, value):
+            self.use_markdown_value = value
+            return self
+
+    class FakeEvent:
+        def plain_result(self, text):
+            return FakeResult(text)
+
+    result = plain_text_result(FakeEvent(), "first\nsecond")
+
+    assert result.text == "first\nsecond"
+    assert result.use_markdown_value is False
+
+
 if __name__ == "__main__":
     test_register_and_supported_protocols()
     test_config_validation_collects_errors()
@@ -282,4 +303,5 @@ if __name__ == "__main__":
     test_add_machine_missing_default_creds_raises()
     test_delete_machine_success()
     test_delete_machine_unknown_raises()
+    test_plain_text_result_disables_markdown()
     print("All tests passed.")

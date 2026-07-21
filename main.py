@@ -19,6 +19,7 @@ from astrbot.api.star import Context, Star
 
 from .backends import Capability, PowerState
 from .manager import MachineError, MachineManager, run_in_thread
+from .responses import plain_text_result
 
 #: Brief pointer shown when the group is invoked without a sub-command.
 _USAGE = (
@@ -88,7 +89,7 @@ class Main(Star):
     @filter.command_group("server")
     async def _server_root(self, event: AstrMessageEvent) -> None:
         """服务器管理 (Redfish / IPMI)"""
-        yield event.plain_result(_USAGE)
+        yield plain_text_result(event, _USAGE)
 
     server = _server_root
 
@@ -100,43 +101,49 @@ class Main(Star):
         """显示所有已配置机器的电源状态"""
         names = self.manager.machine_names
         if not names:
-            yield event.plain_result("没有配置任何机器。")
+            yield plain_text_result(event, "没有配置任何机器。")
             return
         lines = ["🖥️ 电源状态:"]
         for name in names:
             lines.append(f"  • {name}: {await self._safe_power(name)}")
-        yield event.plain_result("\n".join(lines))
+        yield plain_text_result(event, "\n".join(lines))
 
     @server.command("power_on")
     async def power_on(self, event: AstrMessageEvent, machine: str) -> None:
         """开启指定机器 (machine=all 则全部开启)"""
-        yield event.plain_result(await self._power_action(machine, Capability.POWER_ON))
+        yield plain_text_result(
+            event, await self._power_action(machine, Capability.POWER_ON)
+        )
 
     @server.command("power_off")
     async def power_off(self, event: AstrMessageEvent, machine: str) -> None:
         """关闭指定机器 (machine=all 则全部关闭，默认优雅关机)"""
-        yield event.plain_result(
+        yield plain_text_result(
+            event,
             await self._power_action(machine, Capability.POWER_OFF_GRACEFUL),
         )
 
     @server.command("power_forceoff")
     async def power_forceoff(self, event: AstrMessageEvent, machine: str) -> None:
         """强制关闭指定机器"""
-        yield event.plain_result(
+        yield plain_text_result(
+            event,
             await self._power_action(machine, Capability.POWER_OFF),
         )
 
     @server.command("power_reset")
     async def power_reset(self, event: AstrMessageEvent, machine: str) -> None:
         """硬重启指定机器"""
-        yield event.plain_result(
+        yield plain_text_result(
+            event,
             await self._power_action(machine, Capability.POWER_RESET),
         )
 
     @server.command("power_cycle")
     async def power_cycle(self, event: AstrMessageEvent, machine: str) -> None:
         """电源循环 (先关再开) 指定机器"""
-        yield event.plain_result(
+        yield plain_text_result(
+            event,
             await self._power_action(machine, Capability.POWER_CYCLE),
         )
 
@@ -203,14 +210,14 @@ class Main(Star):
             Capability.SYSTEM_INFO,
             self._system_info_op,
         )
-        yield event.plain_result(f"📋 {machine} 系统信息:\n{lines}")
+        yield plain_text_result(event, f"📋 {machine} 系统信息:\n{lines}")
 
     @server.command("info_summary")
     async def info_summary(self, event: AstrMessageEvent) -> None:
         """显示所有机器的电源状态与基本信息摘要"""
         names = self.manager.machine_names
         if not names:
-            yield event.plain_result("没有配置任何机器。")
+            yield plain_text_result(event, "没有配置任何机器。")
             return
         blocks = ["📊 机器概览:"]
         for name in names:
@@ -224,7 +231,7 @@ class Main(Star):
             blocks.append(f"  • {name}: {power}")
             if model:
                 blocks.append(f"      型号: {model}")
-        yield event.plain_result("\n".join(blocks))
+        yield plain_text_result(event, "\n".join(blocks))
 
     @staticmethod
     def _system_info_op(backend) -> list[str]:
@@ -245,7 +252,7 @@ class Main(Star):
     async def boot_show(self, event: AstrMessageEvent, machine: str) -> None:
         """显示指定机器的启动设备配置"""
         lines = await self._safe_lines(machine, Capability.BOOT_DEVICE, self._boot_op)
-        yield event.plain_result(f"👢 {machine} 启动配置:\n{lines}")
+        yield plain_text_result(event, f"👢 {machine} 启动配置:\n{lines}")
 
     @server.command("boot_set")
     async def boot_set(
@@ -268,13 +275,13 @@ class Main(Star):
                 Capability.BOOT_DEVICE,
                 op,
             )
-            yield event.plain_result(f"✅ {machine}: {result}")
+            yield plain_text_result(event, f"✅ {machine}: {result}")
         except MachineError as e:
-            yield event.plain_result(f"❌ {e}")
+            yield plain_text_result(event, f"❌ {e}")
         except NotImplementedError as e:
-            yield event.plain_result(f"❌ 不支持: {e}")
+            yield plain_text_result(event, f"❌ 不支持: {e}")
         except Exception as e:  # noqa: BLE001
-            yield event.plain_result(f"❌ {machine} 失败: {self._short_error(e)}")
+            yield plain_text_result(event, f"❌ {machine} 失败: {self._short_error(e)}")
 
     @staticmethod
     def _boot_op(backend) -> list[str]:
@@ -299,24 +306,24 @@ class Main(Star):
                 op,
             )
             if not readings:
-                yield event.plain_result(f"🌡️ {machine}: 没有可用的传感器读数。")
+                yield plain_text_result(event, f"🌡️ {machine}: 没有可用的传感器读数。")
                 return
             lines = [f"🌡️ {machine} 传感器:"]
             for reading in readings:
                 lines.append(f"  • {reading}")
-            yield event.plain_result("\n".join(lines))
+            yield plain_text_result(event, "\n".join(lines))
         except MachineError as e:
-            yield event.plain_result(f"❌ {e}")
+            yield plain_text_result(event, f"❌ {e}")
         except NotImplementedError as e:
-            yield event.plain_result(f"❌ 不支持: {e}")
+            yield plain_text_result(event, f"❌ 不支持: {e}")
         except Exception as e:  # noqa: BLE001
-            yield event.plain_result(f"❌ {machine} 失败: {self._short_error(e)}")
+            yield plain_text_result(event, f"❌ {machine} 失败: {self._short_error(e)}")
 
     @server.command("bmc_show")
     async def bmc_show(self, event: AstrMessageEvent, machine: str) -> None:
         """显示指定机器的管理控制器 (BMC) 信息"""
         lines = await self._safe_lines(machine, Capability.BMC_INFO, self._bmc_op)
-        yield event.plain_result(f"🔧 {machine} 管理控制器:\n{lines}")
+        yield plain_text_result(event, f"🔧 {machine} 管理控制器:\n{lines}")
 
     @staticmethod
     def _bmc_op(backend) -> list[str]:
@@ -330,13 +337,13 @@ class Main(Star):
         """列出所有已配置的机器"""
         names = self.manager.machine_names
         if not names:
-            yield event.plain_result("没有配置任何机器。")
+            yield plain_text_result(event, "没有配置任何机器。")
             return
         lines = ["🖥️ 已配置的机器:"]
         for name in names:
             m = self.manager.get_machine(name)
             lines.append(f"  • {name} — {m.protocol} @ {m.address}")
-        yield event.plain_result("\n".join(lines))
+        yield plain_text_result(event, "\n".join(lines))
 
     @server.command("machine_probe")
     async def machine_probe(self, event: AstrMessageEvent, machine: str) -> None:
@@ -362,7 +369,7 @@ class Main(Star):
             lines.append(f"  ❌ 不支持: {e}")
         except Exception as e:  # noqa: BLE001
             lines.append(f"  ❌ 连接失败: {self._short_error(e)}")
-        yield event.plain_result("\n".join(lines))
+        yield plain_text_result(event, "\n".join(lines))
 
     @server.command("machine_add")
     async def machine_add(
@@ -390,7 +397,7 @@ class Main(Star):
         try:
             machine_obj = self.manager.add_machine(row)
         except MachineError as e:
-            yield event.plain_result(f"❌ {e}")
+            yield plain_text_result(event, f"❌ {e}")
             return
         # Step 2: actually open a connection and authenticate. Reusing the
         # POWER_STATUS path mirrors `machine_probe`; a 401 / refused connection
@@ -405,7 +412,8 @@ class Main(Star):
             )
         except Exception as e:  # noqa: BLE001
             self.manager.delete_machine(name)
-            yield event.plain_result(
+            yield plain_text_result(
+                event,
                 f"❌ 认证/连接失败，未添加 {name}: {self._short_error(e)}",
             )
             return
@@ -413,7 +421,7 @@ class Main(Star):
         # probe succeeded, so the config file never holds an unreachable entry.
         self._config["machines"].append(row)
         self._config.save_config()
-        yield event.plain_result(f"✅ 已添加 {name} ({address})")
+        yield plain_text_result(event, f"✅ 已添加 {name} ({address})")
 
     @server.command("machine_delete")
     async def machine_delete(self, event: AstrMessageEvent, name: str) -> None:
@@ -421,7 +429,7 @@ class Main(Star):
         try:
             removed = self.manager.delete_machine(name)
         except MachineError as e:
-            yield event.plain_result(f"❌ {e}")
+            yield plain_text_result(event, f"❌ {e}")
             return
         # Sync the on-disk config: rebuild the list without the matching row.
         # Matching by `name` (not identity) keeps this robust to the config
@@ -432,7 +440,7 @@ class Main(Star):
             if str(row.get("name", "")) != name
         ]
         self._config.save_config()
-        yield event.plain_result(f"✅ 已删除 {removed.name} ({removed.address})")
+        yield plain_text_result(event, f"✅ 已删除 {removed.name} ({removed.address})")
 
     # ===================================================================
     # Helpers
