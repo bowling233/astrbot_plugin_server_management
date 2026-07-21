@@ -28,6 +28,10 @@ from astrbot_plugin_server_management.backends import (  # noqa: E402
     register_backend,
     supported_protocols,
 )
+from astrbot_plugin_server_management.backends.redfish_retry import (  # noqa: E402
+    RedfishTransportError,
+    install_retry_compat,
+)
 from astrbot_plugin_server_management.manager import (  # noqa: E402
     MachineError,
     MachineManager,
@@ -90,6 +94,45 @@ class FakeBackend(ServerBackend):
 
     def set_boot_device(self, device, persistent=False):
         raise NotImplementedError
+
+
+class BuggyRetrySession:
+    """Models the request method called by python-redfish-library 3.3.6."""
+
+    def __init__(self, outcomes):
+        self.outcomes = iter(outcomes)
+        self.calls = 0
+
+    def request(self, *args, **kwargs):
+        self.calls += 1
+        outcome = next(self.outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class BuggyRetryClient:
+    """Minimal reproduction of the library's off-by-one retry check."""
+
+    def __init__(self, outcomes, client_max_retry):
+        self._session = BuggyRetrySession(outcomes)
+        self._max_retry = client_max_retry
+
+    def _rest_request(self, *args, max_retry=None, **kwargs):
+        if max_retry is None:
+            max_retry = self._max_retry
+        attempts = 0
+        response = None
+        while attempts <= max_retry:
+            attempts += 1
+            try:
+                response = self._session.request()
+            except Exception:  # noqa: BLE001 - mirrors the dependency
+                continue
+            break
+        if attempts <= self._max_retry:
+            return response
+        raise RuntimeError("RetriesExhaustedError")
 
 
 def test_register_and_supported_protocols():
@@ -296,6 +339,43 @@ def test_redfish_transport_options_are_explicit():
     }
 
 
+def test_redfish_zero_retries_accepts_first_success():
+    response = object()
+    client = BuggyRetryClient([response], client_max_retry=1)
+    install_retry_compat(client, max_retries=0)
+
+    assert client._rest_request("/redfish/v1") is response
+    assert client._session.calls == 1
+
+
+def test_redfish_zero_retries_preserves_first_failure():
+    timeout = TimeoutError("BMC timed out")
+    client = BuggyRetryClient([timeout], client_max_retry=1)
+    install_retry_compat(client, max_retries=0)
+
+    try:
+        client._rest_request("/redfish/v1")
+    except RedfishTransportError as exc:
+        assert str(exc).startswith("GET /redfish/v1:")
+        assert "TimeoutError: BMC timed out" in str(exc)
+        assert exc.__cause__ is timeout
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected RedfishTransportError")
+    assert client._session.calls == 1
+
+
+def test_redfish_retry_limit_allows_configured_extra_attempt():
+    response = object()
+    client = BuggyRetryClient(
+        [TimeoutError("transient"), response],
+        client_max_retry=2,
+    )
+    install_retry_compat(client, max_retries=1)
+
+    assert client._rest_request("/redfish/v1") is response
+    assert client._session.calls == 2
+
+
 def test_resolve_targets_supports_batches_all_and_deduplication():
     manager = MachineManager(
         [
@@ -384,6 +464,9 @@ if __name__ == "__main__":
     test_delete_machine_success()
     test_delete_machine_unknown_raises()
     test_redfish_transport_options_are_explicit()
+    test_redfish_zero_retries_accepts_first_success()
+    test_redfish_zero_retries_preserves_first_failure()
+    test_redfish_retry_limit_allows_configured_extra_attempt()
     test_resolve_targets_supports_batches_all_and_deduplication()
     test_resolve_targets_rejects_unknown_or_mixed_all()
     test_gather_limited_is_concurrent_bounded_and_ordered()

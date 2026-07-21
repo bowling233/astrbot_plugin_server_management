@@ -24,6 +24,7 @@ from .base import (
     ServerBackend,
     SystemInfo,
 )
+from .redfish_retry import install_retry_compat
 
 
 # Power actions exposed by the Redfish ``ComputerSystem.Reset`` action.
@@ -81,9 +82,23 @@ class RedfishBackend(ServerBackend):
             password=self.password,
             default_prefix="/redfish/v1",
             timeout=self.timeout,
-            max_retry=self.max_retries,
+            # python-redfish-library has an off-by-one final success check.
+            # The instance compatibility layer supplies the real per-request
+            # limit while this value compensates only for that final check.
+            max_retry=self.max_retries + 1,
+            check_connectivity=False,
         )
-        self._client.login(auth="session")
+        install_retry_compat(self._client, self.max_retries)
+        try:
+            self._client.login(auth="session")
+        except Exception:
+            # __exit__ is not called when __enter__ raises.
+            try:
+                self._client.logout()
+            except Exception:  # noqa: BLE001 - preserve the login exception
+                pass
+            self._client = None
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

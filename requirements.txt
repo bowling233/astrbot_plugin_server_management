@@ -1,4 +1,4 @@
 # DMTF python-redfish-library (PyPI distribution name: redfish)
-redfish>=3.2.0
+redfish>=3.2.0,<4
 # kontron/python-ipmi (PyPI distribution name: python-ipmi)
 python-ipmi>=0.5.7

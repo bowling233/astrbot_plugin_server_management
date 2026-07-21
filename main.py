@@ -209,6 +209,7 @@ class Main(Star):
         except NotImplementedError as e:
             return f"❌ 不支持: {e}"
         except Exception as e:  # noqa: BLE001
+            self._log_failure(name, capability.value, e)
             return f"❌ 失败: {self._short_error(e)}"
 
     async def _safe_power(self, name: str) -> str:
@@ -228,6 +229,7 @@ class Main(Star):
         except NotImplementedError as e:
             return f"❌ 不支持: {e}"
         except Exception as e:  # noqa: BLE001
+            self._log_failure(name, Capability.POWER_STATUS.value, e)
             return f"❌ 失败: {self._short_error(e)}"
 
     # -----------------------------------------------------------------
@@ -349,6 +351,7 @@ class Main(Star):
         except NotImplementedError as e:
             yield plain_text_result(event, f"❌ 不支持: {e}")
         except Exception as e:  # noqa: BLE001
+            self._log_failure(machine, "boot_set", e)
             yield plain_text_result(event, f"❌ {machine} 失败: {self._short_error(e)}")
 
     @staticmethod
@@ -467,6 +470,7 @@ class Main(Star):
         except NotImplementedError as e:
             lines.append(f"  ❌ 不支持: {e}")
         except Exception as e:  # noqa: BLE001
+            self._log_failure(name, "machine_probe", e)
             lines.append(f"  ❌ 连接失败: {self._short_error(e)}")
         return "\n".join(lines)
 
@@ -510,6 +514,7 @@ class Main(Star):
                 lambda backend: backend.get_power_state(),
             )
         except Exception as e:  # noqa: BLE001
+            self._log_failure(name, "machine_add", e)
             self.manager.delete_machine(name)
             yield plain_text_result(
                 event,
@@ -599,7 +604,15 @@ class Main(Star):
         except NotImplementedError as e:
             return f"❌ 不支持: {e}"
         except Exception as e:  # noqa: BLE001
+            self._log_failure(machine, capability.value, e)
             return f"❌ 失败: {self._short_error(e)}"
+
+    def _log_failure(self, machine: str, operation: str, error: Exception) -> None:
+        """Record the full exception chain without exposing credentials."""
+        logger.exception(
+            f"[server_management] 机器 {machine!r} 执行 {operation!r} 失败: "
+            f"{type(error).__name__}: {self._short_error(error)}",
+        )
 
     @staticmethod
     def _short_error(error: Exception) -> str:
