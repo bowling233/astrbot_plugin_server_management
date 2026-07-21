@@ -61,6 +61,24 @@
     "hint": "是否校验 Redfish (HTTPS) 的 TLS 证书。很多 BMC 使用自签证书，默认关闭。",
     "default": false
   },
+  "redfish_timeout": {
+    "description": "Redfish 单次请求超时（秒）",
+    "type": "int",
+    "hint": "每个 Redfish HTTP 请求的最长等待时间，范围 1–120 秒。默认 10 秒。",
+    "default": 10
+  },
+  "redfish_max_retries": {
+    "description": "Redfish 请求重试次数",
+    "type": "int",
+    "hint": "请求失败后的额外尝试次数，范围 0–3。重试也适用于写操作，为避免重复电源操作，默认不重试。",
+    "default": 0
+  },
+  "max_concurrency": {
+    "description": "最大并行操作数",
+    "type": "int",
+    "hint": "批量命令同时访问的最大机器数，范围 1–32。默认 8。",
+    "default": 8
+  },
   "default_username": {
     "description": "默认用户名",
     "type": "string",

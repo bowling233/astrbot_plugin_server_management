@@ -8,6 +8,7 @@ access or hardware. Run with: ``python -m pytest tests`` (pytest optional) or
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -30,6 +31,7 @@ from astrbot_plugin_server_management.backends import (  # noqa: E402
 from astrbot_plugin_server_management.manager import (  # noqa: E402
     MachineError,
     MachineManager,
+    gather_limited,
 )
 from astrbot_plugin_server_management.responses import plain_text_result  # noqa: E402
 
@@ -271,6 +273,84 @@ def test_delete_machine_unknown_raises():
         raise AssertionError("expected MachineError for unknown machine")
 
 
+def test_redfish_transport_options_are_explicit():
+    manager = MachineManager(
+        [
+            {
+                "name": "rf",
+                "protocol": "redfish",
+                "address": "192.0.2.1",
+                "username": "u",
+                "password": "p",
+            },
+        ],
+        verify_ssl=True,
+        redfish_timeout=7,
+        redfish_max_retries=1,
+    )
+
+    assert manager.get_machine("rf").options == {
+        "verify_ssl": True,
+        "timeout": 7,
+        "max_retries": 1,
+    }
+
+
+def test_resolve_targets_supports_batches_all_and_deduplication():
+    manager = MachineManager(
+        [
+            {"name": "one", "protocol": "fake", "address": "1"},
+            {"name": "two", "protocol": "fake", "address": "2"},
+        ],
+        default_username="u",
+        default_password="p",
+    )
+
+    assert manager.resolve_targets("two one two") == ["two", "one"]
+    assert manager.resolve_targets("ALL") == ["one", "two"]
+
+
+def test_resolve_targets_rejects_unknown_or_mixed_all():
+    manager = MachineManager(
+        [{"name": "one", "protocol": "fake", "address": "1"}],
+        default_username="u",
+        default_password="p",
+    )
+
+    cases = (
+        ("", "至少需要指定"),
+        ("one missing", "missing"),
+        ("all one", "单独使用"),
+    )
+    for selector, expected in cases:
+        try:
+            manager.resolve_targets(selector)
+        except MachineError as exc:
+            assert expected in str(exc)
+        else:  # pragma: no cover - defensive
+            raise AssertionError(f"expected MachineError for {selector!r}")
+
+
+def test_gather_limited_is_concurrent_bounded_and_ordered():
+    async def scenario():
+        active = 0
+        peak = 0
+
+        async def operation(item):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0)
+            active -= 1
+            return item * 10
+
+        results = await gather_limited([1, 2, 3, 4], operation, limit=2)
+        assert results == [10, 20, 30, 40]
+        assert peak == 2
+
+    asyncio.run(scenario())
+
+
 def test_plain_text_result_disables_markdown():
     class FakeResult:
         def __init__(self, text):
@@ -303,5 +383,9 @@ if __name__ == "__main__":
     test_add_machine_missing_default_creds_raises()
     test_delete_machine_success()
     test_delete_machine_unknown_raises()
+    test_redfish_transport_options_are_explicit()
+    test_resolve_targets_supports_batches_all_and_deduplication()
+    test_resolve_targets_rejects_unknown_or_mixed_all()
+    test_gather_limited_is_concurrent_bounded_and_ordered()
     test_plain_text_result_disables_markdown()
     print("All tests passed.")

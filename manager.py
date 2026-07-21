@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TypeVar
 
 from .backends import (
     Capability,
@@ -54,11 +55,17 @@ class MachineManager:
         machines: list[dict],
         default_username: str = "",
         default_password: str = "",
+        verify_ssl: bool = False,
+        redfish_timeout: int = 10,
+        redfish_max_retries: int = 0,
     ) -> None:
         self._machines: dict[str, Machine] = {}
         self._errors: list[str] = []
         self._default_username = default_username or ""
         self._default_password = default_password or ""
+        self._verify_ssl = verify_ssl
+        self._redfish_timeout = redfish_timeout
+        self._redfish_max_retries = redfish_max_retries
         for index, row in enumerate(machines or []):
             self._add_machine(index, row)
 
@@ -105,8 +112,10 @@ class MachineManager:
                 raise MachineError(
                     f"机器 '{name}' 的端口 '{port}' 不是有效数字。",
                 ) from None
-        if protocol == "redfish" and "verify_ssl" in row:
-            options["verify_ssl"] = bool(row["verify_ssl"])
+        if protocol == "redfish":
+            options["verify_ssl"] = bool(row.get("verify_ssl", self._verify_ssl))
+            options["timeout"] = self._redfish_timeout
+            options["max_retries"] = self._redfish_max_retries
 
         return Machine(
             name=name,
@@ -180,6 +189,34 @@ class MachineManager:
             )
         return machine
 
+    def resolve_targets(self, selector: str) -> list[str]:
+        """Resolve a whitespace-separated machine selector.
+
+        ``all`` remains supported, but must be used by itself. Duplicate names
+        are removed while preserving their first-seen order. Any unknown name
+        rejects the complete selection so mutating commands never run only a
+        surprising subset of their requested targets.
+        """
+        requested = list(dict.fromkeys(selector.split()))
+        if not requested:
+            raise MachineError("至少需要指定一台机器。")
+
+        all_tokens = [name for name in requested if name.lower() == "all"]
+        if all_tokens:
+            if len(requested) != 1:
+                raise MachineError("'all' 必须单独使用，不能与机器名混合。")
+            if not self._machines:
+                raise MachineError("没有配置任何机器。")
+            return self.machine_names
+
+        unknown = [name for name in requested if name not in self._machines]
+        if unknown:
+            raise MachineError(
+                f"未找到机器: {', '.join(unknown)}。已配置的机器: "
+                f"{', '.join(self._machines) or '（无）'}",
+            )
+        return requested
+
     def run(
         self,
         machine: Machine,
@@ -215,8 +252,28 @@ async def run_in_thread(func: Callable, *args) -> object:
     """Run a blocking backend call in a worker thread.
 
     Backends perform synchronous network I/O; offloading keeps the event loop
-    responsive. A plain thread is used rather than the default executor so each
-    call has a bounded, predictable lifetime even if the BMC hangs.
+    responsive. Transport-level timeouts remain responsible for bounding the
+    worker lifetime because cancelling an executor future cannot stop a thread
+    that is already blocked in network I/O.
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, functools.partial(func, *args))
+
+
+_ItemT = TypeVar("_ItemT")
+_ResultT = TypeVar("_ResultT")
+
+
+async def gather_limited(
+    items: list[_ItemT],
+    operation: Callable[[_ItemT], Awaitable[_ResultT]],
+    limit: int,
+) -> list[_ResultT]:
+    """Run an async operation concurrently while preserving input order."""
+    semaphore = asyncio.Semaphore(max(1, limit))
+
+    async def guarded(item: _ItemT) -> _ResultT:
+        async with semaphore:
+            return await operation(item)
+
+    return await asyncio.gather(*(guarded(item) for item in items))

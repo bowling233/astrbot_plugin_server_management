@@ -56,7 +56,8 @@ class RedfishBackend(ServerBackend):
         password: str,
         *,
         verify_ssl: bool = False,
-        timeout: int = 30,
+        timeout: int = 10,
+        max_retries: int = 0,
     ) -> None:
         # Normalize the address to an https:// URL, stripping any trailing slash
         # so that prefix-free URI concatenation below is safe.
@@ -69,6 +70,7 @@ class RedfishBackend(ServerBackend):
         self.password = password
         self.verify_ssl = verify_ssl
         self.timeout = timeout
+        self.max_retries = max_retries
         self._client: redfish.redfish_client | None = None
 
     # -- Connection management -----------------------------------------
@@ -79,6 +81,7 @@ class RedfishBackend(ServerBackend):
             password=self.password,
             default_prefix="/redfish/v1",
             timeout=self.timeout,
+            max_retry=self.max_retries,
         )
         self._client.login(auth="session")
         return self

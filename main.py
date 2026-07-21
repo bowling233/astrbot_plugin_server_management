@@ -5,10 +5,11 @@ underscore-separated sub-command names (e.g. ``/server power_list``,
 ``/server power_on <machine>``). A flat namespace keeps registration simple
 and robust — it mirrors how AstrBot's own built-in commands are registered.
 
-``all`` is accepted as a machine name for power operations to operate on every
-configured machine at once. Backend calls run in a worker thread so the event
-loop is never blocked, and every operation is wrapped in try/except so a
-connection failure is reported as a chat message rather than crashing.
+Commands whose only argument is a machine selector accept one or more names
+separated by spaces; ``all`` selects every configured machine. Backend calls
+run concurrently in worker threads up to a configurable limit, and every
+operation is wrapped in try/except so a connection failure is reported as a
+chat message rather than crashing.
 """
 
 from __future__ import annotations
@@ -16,20 +17,21 @@ from __future__ import annotations
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
+from astrbot.core.star.filter.command import GreedyStr
 
 from .backends import Capability, PowerState
-from .manager import MachineError, MachineManager, run_in_thread
+from .manager import MachineError, MachineManager, gather_limited, run_in_thread
 from .responses import plain_text_result
 
 #: Brief pointer shown when the group is invoked without a sub-command.
 _USAGE = (
     "用法: /server <子指令>\n"
-    "  power_list / power_on <m> / power_off <m> / power_forceoff <m>\n"
-    "  power_reset <m> / power_cycle <m>\n"
-    "  info_system <m> / info_summary\n"
-    "  boot_show <m> / boot_set <m> <device> [persistent=true]\n"
-    "  sensor_show <m> / bmc_show <m>\n"
-    "  machine_list / machine_probe <m>\n"
+    "  power_list / power_on <m...> / power_off <m...> / power_forceoff <m...>\n"
+    "  power_reset <m...> / power_cycle <m...>\n"
+    "  info_system <m...> / info_summary\n"
+    "  boot_show <m...> / boot_set <m> <device> [persistent=true]\n"
+    "  sensor_show <m...> / bmc_show <m...>\n"
+    "  machine_list / machine_probe <m...>\n"
     "  machine_add <name> <address> / machine_delete <name>"
 )
 
@@ -43,6 +45,7 @@ class Main(Star):
         self._manager: MachineManager | None = None
         self._graceful_off = True
         self._verify_ssl = False
+        self._max_concurrency = 8
 
     async def initialize(self) -> None:
         """Parse the machine configuration once at plugin load."""
@@ -53,17 +56,36 @@ class Main(Star):
             machines = list(self._config.get("machines", []) or [])
             self._graceful_off = bool(self._config.get("graceful_shutdown", True))
             self._verify_ssl = bool(self._config.get("verify_ssl", False))
+            self._max_concurrency = self._config_int(
+                "max_concurrency",
+                default=8,
+                minimum=1,
+                maximum=32,
+            )
+            redfish_timeout = self._config_int(
+                "redfish_timeout",
+                default=10,
+                minimum=1,
+                maximum=120,
+            )
+            redfish_max_retries = self._config_int(
+                "redfish_max_retries",
+                default=0,
+                minimum=0,
+                maximum=3,
+            )
             default_username = str(self._config.get("default_username", "") or "")
             default_password = str(self._config.get("default_password", "") or "")
-            if self._verify_ssl:
-                # Propagate the SSL flag to every Redfish machine.
-                for row in machines:
-                    if str(row.get("protocol", "")).lower() == "redfish":
-                        row.setdefault("verify_ssl", True)
+        else:
+            redfish_timeout = 10
+            redfish_max_retries = 0
         self._manager = MachineManager(
             machines,
             default_username=default_username,
             default_password=default_password,
+            verify_ssl=self._verify_ssl,
+            redfish_timeout=redfish_timeout,
+            redfish_max_retries=redfish_max_retries,
         )
         for error in self._manager.errors:
             logger.warning(f"[server_management] {error}")
@@ -104,58 +126,67 @@ class Main(Star):
             yield plain_text_result(event, "没有配置任何机器。")
             return
         lines = ["🖥️ 电源状态:"]
-        for name in names:
-            lines.append(f"  • {name}: {await self._safe_power(name)}")
+        states = await self._gather(names, self._safe_power)
+        for name, state in zip(names, states, strict=True):
+            lines.append(f"  • {name}: {state}")
         yield plain_text_result(event, "\n".join(lines))
 
     @server.command("power_on")
-    async def power_on(self, event: AstrMessageEvent, machine: str) -> None:
-        """开启指定机器 (machine=all 则全部开启)"""
+    async def power_on(self, event: AstrMessageEvent, machines: GreedyStr) -> None:
+        """开启指定机器 (多个机器用空格分隔，all 则全部开启)"""
         yield plain_text_result(
-            event, await self._power_action(machine, Capability.POWER_ON)
+            event, await self._power_action(machines, Capability.POWER_ON)
         )
 
     @server.command("power_off")
-    async def power_off(self, event: AstrMessageEvent, machine: str) -> None:
-        """关闭指定机器 (machine=all 则全部关闭，默认优雅关机)"""
+    async def power_off(self, event: AstrMessageEvent, machines: GreedyStr) -> None:
+        """关闭指定机器 (多个机器用空格分隔，all 则全部关闭)"""
         yield plain_text_result(
             event,
-            await self._power_action(machine, Capability.POWER_OFF_GRACEFUL),
+            await self._power_action(machines, Capability.POWER_OFF_GRACEFUL),
         )
 
     @server.command("power_forceoff")
-    async def power_forceoff(self, event: AstrMessageEvent, machine: str) -> None:
+    async def power_forceoff(
+        self,
+        event: AstrMessageEvent,
+        machines: GreedyStr,
+    ) -> None:
         """强制关闭指定机器"""
         yield plain_text_result(
             event,
-            await self._power_action(machine, Capability.POWER_OFF),
+            await self._power_action(machines, Capability.POWER_OFF),
         )
 
     @server.command("power_reset")
-    async def power_reset(self, event: AstrMessageEvent, machine: str) -> None:
+    async def power_reset(self, event: AstrMessageEvent, machines: GreedyStr) -> None:
         """硬重启指定机器"""
         yield plain_text_result(
             event,
-            await self._power_action(machine, Capability.POWER_RESET),
+            await self._power_action(machines, Capability.POWER_RESET),
         )
 
     @server.command("power_cycle")
-    async def power_cycle(self, event: AstrMessageEvent, machine: str) -> None:
+    async def power_cycle(self, event: AstrMessageEvent, machines: GreedyStr) -> None:
         """电源循环 (先关再开) 指定机器"""
         yield plain_text_result(
             event,
-            await self._power_action(machine, Capability.POWER_CYCLE),
+            await self._power_action(machines, Capability.POWER_CYCLE),
         )
 
-    async def _power_action(self, machine: str, capability: Capability) -> str:
-        """Apply a power action to one or all machines, returning a summary."""
-        targets = self._resolve_targets(machine)
-        if not targets:
-            return self._no_targets_message(machine)
-        results: list[str] = []
-        for name in targets:
-            results.append(f"  • {name}: {await self._run_power(name, capability)}")
-        return "\n".join(results)
+    async def _power_action(self, machines: str, capability: Capability) -> str:
+        """Apply a power action to selected machines, returning a summary."""
+        targets, error = self._resolve_targets(machines)
+        if error:
+            return error
+        results = await self._gather(
+            targets,
+            lambda name: self._run_power(name, capability),
+        )
+        return "\n".join(
+            f"  • {name}: {result}"
+            for name, result in zip(targets, results, strict=True)
+        )
 
     async def _run_power(self, name: str, capability: Capability) -> str:
         machine = self.manager.get_machine(name)
@@ -203,14 +234,29 @@ class Main(Star):
     # info
     # -----------------------------------------------------------------
     @server.command("info_system")
-    async def info_system(self, event: AstrMessageEvent, machine: str) -> None:
-        """显示指定机器的系统/硬件信息"""
-        lines = await self._safe_lines(
-            machine,
-            Capability.SYSTEM_INFO,
-            self._system_info_op,
+    async def info_system(
+        self,
+        event: AstrMessageEvent,
+        machines: GreedyStr,
+    ) -> None:
+        """显示指定机器的系统/硬件信息 (多个机器用空格分隔)"""
+        targets, error = self._resolve_targets(machines)
+        if error:
+            yield plain_text_result(event, error)
+            return
+        results = await self._gather(
+            targets,
+            lambda name: self._safe_lines(
+                name,
+                Capability.SYSTEM_INFO,
+                self._system_info_op,
+            ),
         )
-        yield plain_text_result(event, f"📋 {machine} 系统信息:\n{lines}")
+        blocks = (
+            f"📋 {name} 系统信息:\n{lines}"
+            for name, lines in zip(targets, results, strict=True)
+        )
+        yield plain_text_result(event, "\n\n".join(blocks))
 
     @server.command("info_summary")
     async def info_summary(self, event: AstrMessageEvent) -> None:
@@ -220,18 +266,21 @@ class Main(Star):
             yield plain_text_result(event, "没有配置任何机器。")
             return
         blocks = ["📊 机器概览:"]
-        for name in names:
-            power = await self._safe_power(name)
-            info = await self._safe_lines(
-                name,
-                Capability.SYSTEM_INFO,
-                self._system_info_op,
-            )
-            model = self._extract_model(info)
+        summaries = await self._gather(names, self._machine_summary)
+        for name, (power, model) in zip(names, summaries, strict=True):
             blocks.append(f"  • {name}: {power}")
             if model:
                 blocks.append(f"      型号: {model}")
         yield plain_text_result(event, "\n".join(blocks))
+
+    async def _machine_summary(self, name: str) -> tuple[str, str]:
+        power = await self._safe_power(name)
+        info = await self._safe_lines(
+            name,
+            Capability.SYSTEM_INFO,
+            self._system_info_op,
+        )
+        return power, self._extract_model(info)
 
     @staticmethod
     def _system_info_op(backend) -> list[str]:
@@ -249,10 +298,29 @@ class Main(Star):
     # boot
     # -----------------------------------------------------------------
     @server.command("boot_show")
-    async def boot_show(self, event: AstrMessageEvent, machine: str) -> None:
-        """显示指定机器的启动设备配置"""
-        lines = await self._safe_lines(machine, Capability.BOOT_DEVICE, self._boot_op)
-        yield plain_text_result(event, f"👢 {machine} 启动配置:\n{lines}")
+    async def boot_show(
+        self,
+        event: AstrMessageEvent,
+        machines: GreedyStr,
+    ) -> None:
+        """显示指定机器的启动设备配置 (多个机器用空格分隔)"""
+        targets, error = self._resolve_targets(machines)
+        if error:
+            yield plain_text_result(event, error)
+            return
+        results = await self._gather(
+            targets,
+            lambda name: self._safe_lines(
+                name,
+                Capability.BOOT_DEVICE,
+                self._boot_op,
+            ),
+        )
+        blocks = (
+            f"👢 {name} 启动配置:\n{lines}"
+            for name, lines in zip(targets, results, strict=True)
+        )
+        yield plain_text_result(event, "\n\n".join(blocks))
 
     @server.command("boot_set")
     async def boot_set(
@@ -291,39 +359,58 @@ class Main(Star):
     # sensor / bmc
     # -----------------------------------------------------------------
     @server.command("sensor_show")
-    async def sensor_show(self, event: AstrMessageEvent, machine: str) -> None:
-        """显示指定机器的传感器读数"""
-        machine_obj = self.manager.get_machine(machine)
-
-        def op(backend) -> list:
-            return backend.get_sensors()
-
-        try:
-            readings = await run_in_thread(
-                self.manager.run,
-                machine_obj,
+    async def sensor_show(
+        self,
+        event: AstrMessageEvent,
+        machines: GreedyStr,
+    ) -> None:
+        """显示指定机器的传感器读数 (多个机器用空格分隔)"""
+        targets, error = self._resolve_targets(machines)
+        if error:
+            yield plain_text_result(event, error)
+            return
+        results = await self._gather(
+            targets,
+            lambda name: self._safe_lines(
+                name,
                 Capability.SENSORS,
-                op,
-            )
-            if not readings:
-                yield plain_text_result(event, f"🌡️ {machine}: 没有可用的传感器读数。")
-                return
-            lines = [f"🌡️ {machine} 传感器:"]
-            for reading in readings:
-                lines.append(f"  • {reading}")
-            yield plain_text_result(event, "\n".join(lines))
-        except MachineError as e:
-            yield plain_text_result(event, f"❌ {e}")
-        except NotImplementedError as e:
-            yield plain_text_result(event, f"❌ 不支持: {e}")
-        except Exception as e:  # noqa: BLE001
-            yield plain_text_result(event, f"❌ {machine} 失败: {self._short_error(e)}")
+                self._sensor_op,
+            ),
+        )
+        blocks = (
+            f"🌡️ {name} 传感器:\n{lines}"
+            for name, lines in zip(targets, results, strict=True)
+        )
+        yield plain_text_result(event, "\n\n".join(blocks))
+
+    @staticmethod
+    def _sensor_op(backend) -> list[str]:
+        return [f"  • {reading}" for reading in backend.get_sensors()]
 
     @server.command("bmc_show")
-    async def bmc_show(self, event: AstrMessageEvent, machine: str) -> None:
-        """显示指定机器的管理控制器 (BMC) 信息"""
-        lines = await self._safe_lines(machine, Capability.BMC_INFO, self._bmc_op)
-        yield plain_text_result(event, f"🔧 {machine} 管理控制器:\n{lines}")
+    async def bmc_show(
+        self,
+        event: AstrMessageEvent,
+        machines: GreedyStr,
+    ) -> None:
+        """显示指定机器的管理控制器信息 (多个机器用空格分隔)"""
+        targets, error = self._resolve_targets(machines)
+        if error:
+            yield plain_text_result(event, error)
+            return
+        results = await self._gather(
+            targets,
+            lambda name: self._safe_lines(
+                name,
+                Capability.BMC_INFO,
+                self._bmc_op,
+            ),
+        )
+        blocks = (
+            f"🔧 {name} 管理控制器:\n{lines}"
+            for name, lines in zip(targets, results, strict=True)
+        )
+        yield plain_text_result(event, "\n\n".join(blocks))
 
     @staticmethod
     def _bmc_op(backend) -> list[str]:
@@ -346,9 +433,21 @@ class Main(Star):
         yield plain_text_result(event, "\n".join(lines))
 
     @server.command("machine_probe")
-    async def machine_probe(self, event: AstrMessageEvent, machine: str) -> None:
-        """探测指定机器: 连接测试 + 支持的能力列表"""
-        machine_obj = self.manager.get_machine(machine)
+    async def machine_probe(
+        self,
+        event: AstrMessageEvent,
+        machines: GreedyStr,
+    ) -> None:
+        """探测指定机器 (多个机器用空格分隔)"""
+        targets, error = self._resolve_targets(machines)
+        if error:
+            yield plain_text_result(event, error)
+            return
+        results = await self._gather(targets, self._probe_machine)
+        yield plain_text_result(event, "\n\n".join(results))
+
+    async def _probe_machine(self, name: str) -> str:
+        machine_obj = self.manager.get_machine(name)
         lines = [f"🔍 {machine_obj} 探测结果:"]
 
         def op(backend) -> list[str]:
@@ -369,7 +468,7 @@ class Main(Star):
             lines.append(f"  ❌ 不支持: {e}")
         except Exception as e:  # noqa: BLE001
             lines.append(f"  ❌ 连接失败: {self._short_error(e)}")
-        yield plain_text_result(event, "\n".join(lines))
+        return "\n".join(lines)
 
     @server.command("machine_add")
     async def machine_add(
@@ -445,21 +544,38 @@ class Main(Star):
     # ===================================================================
     # Helpers
     # ===================================================================
-    def _resolve_targets(self, machine: str) -> list[str]:
-        """Expand ``all`` to every machine name; otherwise validate the name."""
-        if machine.lower() == "all":
-            return self.manager.machine_names
-        if machine in self.manager.machine_names:
-            return [machine]
-        return []
+    def _resolve_targets(self, machines: str) -> tuple[list[str], str]:
+        try:
+            return self.manager.resolve_targets(str(machines)), ""
+        except MachineError as e:
+            return [], f"❌ {e}"
 
-    def _no_targets_message(self, machine: str) -> str:
-        if machine.lower() == "all":
-            return "没有配置任何机器。"
-        return (
-            f"未找到机器 '{machine}'。已配置的机器: "
-            f"{', '.join(self.manager.machine_names) or '（无）'}"
-        )
+    async def _gather(self, targets, operation):
+        return await gather_limited(targets, operation, self._max_concurrency)
+
+    def _config_int(
+        self,
+        key: str,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        raw = self._config.get(key, default) if self._config else default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"[server_management] 配置 {key}={raw!r} 无效，使用默认值 {default}。",
+            )
+            return default
+        bounded = min(maximum, max(minimum, value))
+        if bounded != value:
+            logger.warning(
+                f"[server_management] 配置 {key}={value} 超出范围 "
+                f"[{minimum}, {maximum}]，已调整为 {bounded}。",
+            )
+        return bounded
 
     async def _safe_lines(
         self,

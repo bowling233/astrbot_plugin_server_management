@@ -1,6 +1,6 @@
 name: astrbot_plugin_server_management
 display_name: 服务器管理
 desc: 通过 Redfish / IPMI 管理服务器：查询电源状态、开机/关机、查看系统信息与传感器等。支持接入新的管理协议。
-version: 0.1.0
+version: 0.2.0
 author: RC4ML
 repo: "https://github.com/bowling233/astrbot_plugin_server_management"
