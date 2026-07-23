@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import ssl
 import sys
 
 # Treat the plugin directory as a package on sys.path so that the package's own
@@ -31,6 +32,9 @@ from astrbot_plugin_server_management.backends import (  # noqa: E402
 from astrbot_plugin_server_management.backends.redfish_retry import (  # noqa: E402
     RedfishTransportError,
     install_retry_compat,
+)
+from astrbot_plugin_server_management.backends.redfish_tls import (  # noqa: E402
+    create_compatible_ssl_context,
 )
 from astrbot_plugin_server_management.manager import (  # noqa: E402
     MachineError,
@@ -339,6 +343,24 @@ def test_redfish_transport_options_are_explicit():
     }
 
 
+def test_redfish_tls_context_keeps_modern_and_static_rsa_ciphers():
+    default_context = ssl.create_default_context()
+    default_ciphers = {cipher["name"] for cipher in default_context.get_ciphers()}
+
+    compatible_context = create_compatible_ssl_context()
+    compatible_ciphers = {
+        cipher["name"] for cipher in compatible_context.get_ciphers()
+    }
+
+    assert default_ciphers <= compatible_ciphers
+    assert {
+        "AES256-GCM-SHA384",
+        "AES128-GCM-SHA256",
+        "AES256-SHA256",
+        "AES128-SHA256",
+    } <= compatible_ciphers
+
+
 def test_redfish_zero_retries_accepts_first_success():
     response = object()
     client = BuggyRetryClient([response], client_max_retry=1)
@@ -464,6 +486,7 @@ if __name__ == "__main__":
     test_delete_machine_success()
     test_delete_machine_unknown_raises()
     test_redfish_transport_options_are_explicit()
+    test_redfish_tls_context_keeps_modern_and_static_rsa_ciphers()
     test_redfish_zero_retries_accepts_first_success()
     test_redfish_zero_retries_preserves_first_failure()
     test_redfish_retry_limit_allows_configured_extra_attempt()

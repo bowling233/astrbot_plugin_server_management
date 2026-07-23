@@ -25,6 +25,7 @@ from .base import (
     SystemInfo,
 )
 from .redfish_retry import install_retry_compat
+from .redfish_tls import CompatibleHTTPSAdapter
 
 
 # Power actions exposed by the Redfish ``ComputerSystem.Reset`` action.
@@ -87,6 +88,7 @@ class RedfishBackend(ServerBackend):
             # limit while this value compensates only for that final check.
             max_retry=self.max_retries + 1,
             check_connectivity=False,
+            https_adapter=CompatibleHTTPSAdapter(),
         )
         install_retry_compat(self._client, self.max_retries)
         try:
